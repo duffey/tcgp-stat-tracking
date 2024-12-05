@@ -3,7 +3,7 @@
 Automatically track WRs for decks in Pokemon Trading Card Game Pocket.
 
 ## Usage
-1. Download `deck_stats.exe` from Releases or build it.
+1. Download `deck_stats.zip` from Releases and extract `deck_stats.exe` or build it.
 2. Run `deck_stats.exe`.
 3. A window will pop up asking you to select a window. Choose the window of your phone.
 4. Add `http://localhost:9876` as a browser source in OBS to display stats on stream.
