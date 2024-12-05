@@ -1,5 +1,2 @@
 build
-dist
-venv
 deck_stats.csv
-main.spec
