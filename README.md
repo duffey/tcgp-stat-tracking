@@ -14,5 +14,5 @@ The program asks you for a window to take screenshots from, which should be set 
 
 ## Build `.exe`
 ```
-pyinstaller --onefile main.py
+pyinstaller main.py
 ```
