@@ -160,13 +160,16 @@ void startServer() {
 cv::Mat captureWindow(const std::string& windowName) {
     HWND hwnd = FindWindowA(NULL, windowName.c_str());
     if (!hwnd) {
-        std::cerr << "Error: Window not found!" << std::endl;
+        return cv::Mat();
+    }
+
+    // Check if the window is currently focused
+    if (GetForegroundWindow() != hwnd) {
         return cv::Mat();
     }
 
     // Check if the window is visible
     if (!IsWindowVisible(hwnd)) {
-        std::cerr << "Error: Window is hidden!" << std::endl;
         return cv::Mat();
     }
 
@@ -174,7 +177,6 @@ cv::Mat captureWindow(const std::string& windowName) {
     WINDOWPLACEMENT wp;
     wp.length = sizeof(WINDOWPLACEMENT);
     if (GetWindowPlacement(hwnd, &wp) && wp.showCmd == SW_SHOWMINIMIZED) {
-        std::cerr << "Error: Window is minimized!" << std::endl;
         return cv::Mat();
     }
 
@@ -456,8 +458,6 @@ int main() {
                     }
                 }
             }
-        } else {
-            std::cerr << "Failed to capture the window." << std::endl;
         }
         Sleep(500); // Simulate the timer interval
     }
