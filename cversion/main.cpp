@@ -1,12 +1,15 @@
+#include <winsock2.h>
 #include <iostream>
 #include <vector>
 #include <string>
+#include <sstream>
 #include <windows.h>
 #include <algorithm>
 #include <memory>
 #include <string>
 #include <map>
 #include <fstream>
+#include <thread>
 
 #include <allheaders.h>
 #include <tesseract/baseapi.h>
@@ -17,6 +20,8 @@
 #define IDC_START_BUTTON 102
 #define TIMER_ID 1
 
+#pragma comment(lib, "ws2_32.lib")
+
 std::vector<std::string> windowTitles;
 tesseract::TessBaseAPI tess;
 
@@ -25,11 +30,151 @@ std::string currentWindow;
 
 std::string currentDeck;
 std::map<std::string, std::pair<int, int>> data; // Deck -> {victories, defeats}
+bool serverRunning = true;
+
+std::string generateHTMLTable() {
+    std::ostringstream html;
+
+    html << "<!doctype html>\n";
+    html << "<html>\n";
+    html << "    <head>\n";
+    html << "        <title>Deck Stats</title>\n";
+    html << "        <style>\n";
+    html << "            body { font-size: 26px; font-family: Roboto; }\n";
+    html << "            th { text-align: left; }\n";
+    html << "            th, td { padding-right: 1em; }\n";
+    html << "        </style>\n";
+    html << "        <script>\n";
+    html << "            setTimeout(function() { location.reload(); }, 5000);\n";
+    html << "        </script>\n";
+    html << "    </head>\n";
+    html << "    <body>\n";
+    html << "        <table>\n";
+    html << "            <thead>\n";
+    html << "                <tr><th>Deck</th><th>Wins</th><th>Losses</th><th>WR</th></tr>\n";
+    html << "            </thead>\n";
+    html << "            <tbody>\n";
+
+    for (const auto& entry : data) {
+        const std::string& deck = entry.first;
+        int wins = entry.second.first;
+        int losses = entry.second.second;
+
+        if (wins > 0 || losses > 0) {
+            int winRate = (wins * 100) / (wins + losses); // Calculate win rate
+
+            html << "                <tr>\n";
+            html << "                    <td>" << deck << "</td>\n";
+            html << "                    <td>" << wins << "</td>\n";
+            html << "                    <td>" << losses << "</td>\n";
+            html << "                    <td>" << winRate << "%</td>\n";
+            html << "                </tr>\n";
+        }
+    }
+
+    html << "            </tbody>\n";
+    html << "        </table>\n";
+    html << "    </body>\n";
+    html << "</html>\n";
+
+    return html.str();
+}
+
+void handleClient(SOCKET clientSocket) {
+    // Read the HTTP request
+    char buffer[1024];
+    int bytesReceived = recv(clientSocket, buffer, sizeof(buffer) - 1, 0);
+    if (bytesReceived <= 0) {
+        closesocket(clientSocket);
+        return;
+    }
+
+    buffer[bytesReceived] = '\0'; // Null-terminate the buffer
+
+    // Send an HTTP response with the stats as an HTML table
+    std::string responseBody = generateHTMLTable();
+    std::ostringstream response;
+    response << "HTTP/1.1 200 OK\r\n"
+             << "Content-Type: text/html\r\n"
+             << "Content-Length: " << responseBody.size() << "\r\n\r\n"
+             << responseBody;
+
+    std::string responseStr = response.str();
+    send(clientSocket, responseStr.c_str(), responseStr.size(), 0);
+
+    closesocket(clientSocket);
+}
+
+void startServer() {
+    WSADATA wsaData;
+    SOCKET listeningSocket = INVALID_SOCKET;
+    struct sockaddr_in serverAddr;
+
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cerr << "Failed to initialize Winsock.\n";
+        return;
+    }
+
+    listeningSocket = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listeningSocket == INVALID_SOCKET) {
+        std::cerr << "Error creating socket: " << WSAGetLastError() << "\n";
+        WSACleanup();
+        return;
+    }
+
+    serverAddr.sin_family = AF_INET;
+    serverAddr.sin_addr.s_addr = INADDR_ANY; // Listen on any address
+    serverAddr.sin_port = htons(9876);       // Port 9876
+
+    if (bind(listeningSocket, (struct sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+        std::cerr << "Bind failed: " << WSAGetLastError() << "\n";
+        closesocket(listeningSocket);
+        WSACleanup();
+        return;
+    }
+
+    if (listen(listeningSocket, SOMAXCONN) == SOCKET_ERROR) {
+        std::cerr << "Listen failed: " << WSAGetLastError() << "\n";
+        closesocket(listeningSocket);
+        WSACleanup();
+        return;
+    }
+
+    std::cout << "Server running on http://localhost:9876\n";
+
+    while (serverRunning) {
+        SOCKET clientSocket = accept(listeningSocket, NULL, NULL);
+        if (clientSocket == INVALID_SOCKET) {
+            std::cerr << "Accept failed: " << WSAGetLastError() << "\n";
+            break;
+        }
+
+        // Handle client in a separate thread
+        std::thread(handleClient, clientSocket).detach();
+    }
+
+    closesocket(listeningSocket);
+    WSACleanup();
+}
 
 cv::Mat captureWindow(const std::string& windowName) {
     HWND hwnd = FindWindowA(NULL, windowName.c_str());
     if (!hwnd) {
         std::cerr << "Error: Window not found!" << std::endl;
+        return cv::Mat();
+    }
+
+    // Check if the window is visible
+    if (!IsWindowVisible(hwnd)) {
+        std::cerr << "Error: Window is hidden!" << std::endl;
+        return cv::Mat();
+    }
+
+    // Check if the window is minimized
+    WINDOWPLACEMENT wp;
+    wp.length = sizeof(WINDOWPLACEMENT);
+    if (GetWindowPlacement(hwnd, &wp) && wp.showCmd == SW_SHOWMINIMIZED) {
+        std::cerr << "Error: Window is minimized!" << std::endl;
         return cv::Mat();
     }
 
@@ -211,6 +356,28 @@ void writeDataToCSV() {
     }
 }
 
+void loadDataFromCSV() {
+    std::ifstream file("deck_stats.csv");
+    if (!file.is_open()) {
+        std::cerr << "Error: Could not open file deck_stats.csv for reading." << std::endl;
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        std::istringstream stream(line);
+        std::string deck;
+        int wins = 0, losses = 0;
+
+        if (std::getline(stream, deck, ',') && stream >> wins && stream.ignore() && stream >> losses) {
+            data[deck] = {wins, losses};
+        }
+    }
+
+    file.close();
+    std::cout << "Loaded data from deck_stats.csv." << std::endl;
+}
+
 int main() {
     if (tess.Init("./tessdata", "eng")) {
         std::cerr << "OCRTesseract: Could not initialize tesseract." << std::endl;
@@ -219,6 +386,7 @@ int main() {
 
     tess.SetPageSegMode(tesseract::PageSegMode::PSM_AUTO);
     tess.SetVariable("user_defined_dpi", "72");
+    tess.SetVariable("debug_file", "/dev/null");
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
@@ -244,15 +412,21 @@ int main() {
         DispatchMessage(&msg);
     }
 
+    loadDataFromCSV();
+
+    std::thread serverThread(startServer);
+
     while (isRunning) {
         cv::Mat screenshot = captureWindow(currentWindow);
         if (!screenshot.empty()) {
             cv::Mat preprocessedImage = preprocessImage(screenshot);
             auto lines = performOCR(preprocessedImage);
 
+            /*
             for (const auto& line : lines) {
                 std::cout << line << std::endl;
             }
+            */
 
             if (!lines.empty()) {
                 if (find(lines, "Random Match")) {
@@ -262,6 +436,7 @@ int main() {
                         if (data.find(currentDeck) == data.end()) {
                             data[currentDeck] = {0, 0};
                         }
+                        std::cout << "Deck updated: " << currentDeck << std::endl;
                     }
                 }
 
@@ -270,12 +445,14 @@ int main() {
                         data[currentDeck].first++;
                         currentDeck.clear();
                         writeDataToCSV();
+                        std::cout << "Victory!" << std::endl;
                     }
 
                     if (find(lines, "Defeat")) {
                         data[currentDeck].second++;
                         currentDeck.clear();
                         writeDataToCSV();
+                        std::cout << "Defeat..." << std::endl;
                     }
                 }
             }
@@ -284,6 +461,10 @@ int main() {
         }
         Sleep(500); // Simulate the timer interval
     }
+
+    serverRunning = false;
+
+    serverThread.join();
 
     return 0;
 }
