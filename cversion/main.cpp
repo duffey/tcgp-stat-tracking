@@ -6,24 +6,27 @@
 #include <memory>
 #include <string>
 
-#include <allheaders.h> // Leptonica main header for image I/O
-#include <tesseract/baseapi.h> // Tesseract main header
-
+#include <allheaders.h>
+#include <tesseract/baseapi.h>
 #include <opencv2/highgui.hpp>
 #include <opencv2/imgproc.hpp>
 
 #define IDC_WINDOW_LIST 101
-#define IDC_CAPTURE_BUTTON 102
+#define IDC_START_BUTTON 102
+#define IDC_STOP_BUTTON 103
+#define TIMER_ID 1
 
 std::vector<std::string> windowTitles;
 tesseract::TessBaseAPI tess;
 
-struct TextLine {
-    std::string text;
-    int y; // y-coordinate of the baseline
-};
+bool isRunning = false;
+std::string currentWindow;
 
-// Callback to collect window titles
+void updateButtonStates(HWND hStartButton, HWND hStopButton) {
+    EnableWindow(hStartButton, !isRunning); // Enable Start if not running
+    EnableWindow(hStopButton, isRunning);  // Enable Stop if running
+}
+
 BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
     char title[256];
     if (GetWindowTextA(hwnd, title, sizeof(title)) && IsWindowVisible(hwnd) && strlen(title) > 0) {
@@ -32,19 +35,17 @@ BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
     return TRUE;
 }
 
-// Enumerate windows and populate dropdown
 void enumerateWindows(HWND hComboBox) {
     windowTitles.clear();
-    SendMessage(hComboBox, CB_RESETCONTENT, 0, 0); // Clear the dropdown
+    SendMessage(hComboBox, CB_RESETCONTENT, 0, 0);
     EnumWindows(EnumWindowsCallback, 0);
 
     for (const auto& title : windowTitles) {
         SendMessageA(hComboBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(title.c_str()));
     }
-    SendMessage(hComboBox, CB_SETCURSEL, 0, 0); // Set default selection
+    SendMessage(hComboBox, CB_SETCURSEL, 0, 0);
 }
 
-// Capture a screenshot of the selected window
 cv::Mat captureWindow(const std::string& windowName) {
     HWND hwnd = FindWindowA(NULL, windowName.c_str());
     if (!hwnd) {
@@ -82,12 +83,9 @@ cv::Mat captureWindow(const std::string& windowName) {
 cv::Mat preprocessImage(const cv::Mat& input) {
     cv::Mat gray, adjusted;
 
-    // Convert to grayscale
     cv::cvtColor(input, gray, cv::COLOR_BGR2GRAY);
-
-    // Adjust brightness and contrast (contrast ≈ 2.06, brightness ≈ -89)
     double alpha = 1.95; // Contrast multiplier
-    int beta = -200;      // Brightness offset
+    int beta = -200;     // Brightness offset
     gray.convertTo(adjusted, -1, alpha, beta);
 
     return adjusted;
@@ -96,7 +94,6 @@ cv::Mat preprocessImage(const cv::Mat& input) {
 std::vector<std::string> performOCR(const cv::Mat& image) {
     std::vector<std::string> lines;
 
-    // Convert the OpenCV Mat to Leptonica PIX
     PIX* pixs = pixCreate(image.cols, image.rows, 8);
     for (int y = 0; y < image.rows; ++y) {
         const uint8_t* row = image.ptr<uint8_t>(y);
@@ -105,16 +102,13 @@ std::vector<std::string> performOCR(const cv::Mat& image) {
         }
     }
 
-    // Recognize
     tess.SetImage(pixs);
     if (tess.Recognize(0) != 0) {
-        std::cout << "Tesseract failed to recognize text." << std::endl;
+        std::cerr << "Tesseract failed to recognize text." << std::endl;
         pixDestroy(&pixs);
         return lines;
     }
 
-    // Extract lines and bounding boxes
-    std::vector<TextLine> textLines;
     tesseract::ResultIterator* ri = tess.GetIterator();
     tesseract::PageIteratorLevel level = tesseract::RIL_TEXTLINE;
 
@@ -122,82 +116,79 @@ std::vector<std::string> performOCR(const cv::Mat& image) {
         do {
             const char* text = ri->GetUTF8Text(level);
             if (text != nullptr) {
-                int x1, y1, x2, y2;
-                ri->BoundingBox(level, &x1, &y1, &x2, &y2);
-                textLines.push_back({text, y1}); // Use y1 as the sorting key
+                lines.push_back(text);
                 delete[] text;
             }
         } while (ri->Next(level));
     }
 
-    // Sort lines by y-coordinate (ascending)
-    std::sort(textLines.begin(), textLines.end(), [](const TextLine& a, const TextLine& b) {
-        return a.y < b.y;
-    });
-
-    // Output sorted lines
-    for (const auto& textLine : textLines) {
-        lines.push_back(textLine.text);
-    }
-
-    // Cleanup
     tess.Clear();
     pixDestroy(&pixs);
 
     return lines;
 }
 
-// Window Procedure for handling GUI events
+
+void performOCRAndDisplay(const std::string& windowName) {
+    cv::Mat screenshot = captureWindow(windowName);
+    if (!screenshot.empty()) {
+        cv::Mat preprocessedImage = preprocessImage(screenshot);
+
+        std::vector<std::string> ocrResult = performOCR(preprocessedImage);
+
+        std::cout << "OCR Results:" << std::endl;
+        for (const auto& line : ocrResult) {
+            std::cout << line << std::endl;
+        }
+    } else {
+        std::cerr << "Failed to capture the window." << std::endl;
+    }
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    static HWND hComboBox;
-    static HWND hCaptureButton;
+    static HWND hComboBox, hStartButton, hStopButton;
 
     switch (uMsg) {
     case WM_CREATE:
-        // Create dropdown (combo box)
         hComboBox = CreateWindowA("COMBOBOX", NULL,
                                   WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST,
                                   10, 10, 400, 200, hwnd, (HMENU)IDC_WINDOW_LIST, NULL, NULL);
-        // Create capture button
-        hCaptureButton = CreateWindowA("BUTTON", "Capture",
-                                       WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                                       420, 10, 100, 30, hwnd, (HMENU)IDC_CAPTURE_BUTTON, NULL, NULL);
-        // Populate dropdown
+        hStartButton = CreateWindowA("BUTTON", "Start",
+                                     WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                                     420, 10, 100, 30, hwnd, (HMENU)IDC_START_BUTTON, NULL, NULL);
+        hStopButton = CreateWindowA("BUTTON", "Stop",
+                                    WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                                    420, 50, 100, 30, hwnd, (HMENU)IDC_STOP_BUTTON, NULL, NULL);
         enumerateWindows(hComboBox);
+        updateButtonStates(hStartButton, hStopButton);
         break;
 
     case WM_COMMAND:
-        if (LOWORD(wParam) == IDC_CAPTURE_BUTTON) {
-            // Capture button clicked
+        if (LOWORD(wParam) == IDC_START_BUTTON) {
             int index = SendMessage(hComboBox, CB_GETCURSEL, 0, 0);
             if (index != CB_ERR) {
                 char windowName[256];
                 SendMessageA(hComboBox, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(windowName));
-
-                cv::Mat screenshot = captureWindow(windowName);
-                if (!screenshot.empty()) {
-                    cv::imwrite("screenshot.png", screenshot);
-
-                    // Preprocess the image
-                    cv::Mat preprocessedImage = preprocessImage(screenshot);
-
-                    // Save the preprocessed image (optional, for debugging)
-                    cv::imwrite("preprocessed.png", preprocessedImage);
-
-                    std::vector<std::string> ocrResult = performOCR(preprocessedImage);
-
-                    std::cout << "OCR Results:" << std::endl;
-                    for (const auto& line : ocrResult) {
-                        std::cout << line << std::endl;
-                    }
-                } else {
-                    MessageBox(hwnd, "Failed to capture the window.", "Error", MB_OK | MB_ICONERROR);
-                }
+                currentWindow = windowName;
+                isRunning = true;
+                SetTimer(hwnd, TIMER_ID, 500, NULL); // Start timer
+                updateButtonStates(hStartButton, hStopButton);
             }
+        } else if (LOWORD(wParam) == IDC_STOP_BUTTON) {
+            KillTimer(hwnd, TIMER_ID);
+            isRunning = false;
+            updateButtonStates(hStartButton, hStopButton);
+        }
+        break;
+
+    case WM_TIMER:
+        if (wParam == TIMER_ID && isRunning) {
+            performOCRAndDisplay(currentWindow);
         }
         break;
 
     case WM_DESTROY:
+        KillTimer(hwnd, TIMER_ID);
         PostQuitMessage(0);
         break;
 
@@ -209,23 +200,20 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 
 int main() {
     if (tess.Init("./tessdata", "eng")) {
-        std::cout << "OCRTesseract: Could not initialize tesseract." << std::endl;
+        std::cerr << "OCRTesseract: Could not initialize tesseract." << std::endl;
         return 1;
     }
 
-    // Setup
     tess.SetPageSegMode(tesseract::PageSegMode::PSM_AUTO);
-
-    const char* CLASS_NAME = "WindowCaptureApp";
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
     wc.hInstance = GetModuleHandle(NULL);
-    wc.lpszClassName = CLASS_NAME;
+    wc.lpszClassName = "WindowCaptureApp";
 
     RegisterClass(&wc);
 
-    HWND hwnd = CreateWindowEx(0, CLASS_NAME, "Window Capture Tool",
+    HWND hwnd = CreateWindowEx(0, "WindowCaptureApp", "OCR Tool with Timer",
                                WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 550, 150,
                                NULL, NULL, GetModuleHandle(NULL), NULL);
 
