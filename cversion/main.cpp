@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <map>
+#include <fstream>
 
 #include <allheaders.h>
 #include <tesseract/baseapi.h>
@@ -13,7 +15,6 @@
 
 #define IDC_WINDOW_LIST 101
 #define IDC_START_BUTTON 102
-#define IDC_STOP_BUTTON 103
 #define TIMER_ID 1
 
 std::vector<std::string> windowTitles;
@@ -22,29 +23,8 @@ tesseract::TessBaseAPI tess;
 bool isRunning = false;
 std::string currentWindow;
 
-void updateButtonStates(HWND hStartButton, HWND hStopButton) {
-    EnableWindow(hStartButton, !isRunning); // Enable Start if not running
-    EnableWindow(hStopButton, isRunning);  // Enable Stop if running
-}
-
-BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
-    char title[256];
-    if (GetWindowTextA(hwnd, title, sizeof(title)) && IsWindowVisible(hwnd) && strlen(title) > 0) {
-        windowTitles.push_back(title);
-    }
-    return TRUE;
-}
-
-void enumerateWindows(HWND hComboBox) {
-    windowTitles.clear();
-    SendMessage(hComboBox, CB_RESETCONTENT, 0, 0);
-    EnumWindows(EnumWindowsCallback, 0);
-
-    for (const auto& title : windowTitles) {
-        SendMessageA(hComboBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(title.c_str()));
-    }
-    SendMessage(hComboBox, CB_SETCURSEL, 0, 0);
-}
+std::string currentDeck;
+std::map<std::string, std::pair<int, int>> data; // Deck -> {victories, defeats}
 
 cv::Mat captureWindow(const std::string& windowName) {
     HWND hwnd = FindWindowA(NULL, windowName.c_str());
@@ -116,8 +96,21 @@ std::vector<std::string> performOCR(const cv::Mat& image) {
         do {
             const char* text = ri->GetUTF8Text(level);
             if (text != nullptr) {
-                lines.push_back(text);
+                std::string line = text;
                 delete[] text;
+
+                size_t start = line.find_first_not_of(" \t\n\r");
+                size_t end = line.find_last_not_of(" \t\n\r");
+
+                if (start != std::string::npos && end != std::string::npos) {
+                    line = line.substr(start, end - start + 1);
+                } else {
+                    line.clear();
+                }
+
+                if (!line.empty()) {
+                    lines.push_back(line);
+                }
             }
         } while (ri->Next(level));
     }
@@ -128,25 +121,27 @@ std::vector<std::string> performOCR(const cv::Mat& image) {
     return lines;
 }
 
-
-void performOCRAndDisplay(const std::string& windowName) {
-    cv::Mat screenshot = captureWindow(windowName);
-    if (!screenshot.empty()) {
-        cv::Mat preprocessedImage = preprocessImage(screenshot);
-
-        std::vector<std::string> ocrResult = performOCR(preprocessedImage);
-
-        std::cout << "OCR Results:" << std::endl;
-        for (const auto& line : ocrResult) {
-            std::cout << line << std::endl;
-        }
-    } else {
-        std::cerr << "Failed to capture the window." << std::endl;
+BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
+    char title[256];
+    if (GetWindowTextA(hwnd, title, sizeof(title)) && IsWindowVisible(hwnd) && strlen(title) > 0) {
+        windowTitles.push_back(title);
     }
+    return TRUE;
+}
+
+void enumerateWindows(HWND hComboBox) {
+    windowTitles.clear();
+    SendMessage(hComboBox, CB_RESETCONTENT, 0, 0);
+    EnumWindows(EnumWindowsCallback, 0);
+
+    for (const auto& title : windowTitles) {
+        SendMessageA(hComboBox, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(title.c_str()));
+    }
+    SendMessage(hComboBox, CB_SETCURSEL, 0, 0);
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
-    static HWND hComboBox, hStartButton, hStopButton;
+    static HWND hComboBox, hStartButton;
 
     switch (uMsg) {
     case WM_CREATE:
@@ -156,11 +151,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         hStartButton = CreateWindowA("BUTTON", "Start",
                                      WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                                      420, 10, 100, 30, hwnd, (HMENU)IDC_START_BUTTON, NULL, NULL);
-        hStopButton = CreateWindowA("BUTTON", "Stop",
-                                    WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                                    420, 50, 100, 30, hwnd, (HMENU)IDC_STOP_BUTTON, NULL, NULL);
         enumerateWindows(hComboBox);
-        updateButtonStates(hStartButton, hStopButton);
         break;
 
     case WM_COMMAND:
@@ -171,24 +162,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
                 SendMessageA(hComboBox, CB_GETLBTEXT, index, reinterpret_cast<LPARAM>(windowName));
                 currentWindow = windowName;
                 isRunning = true;
-                SetTimer(hwnd, TIMER_ID, 500, NULL); // Start timer
-                updateButtonStates(hStartButton, hStopButton);
+                DestroyWindow(hwnd); // Close the window
             }
-        } else if (LOWORD(wParam) == IDC_STOP_BUTTON) {
-            KillTimer(hwnd, TIMER_ID);
-            isRunning = false;
-            updateButtonStates(hStartButton, hStopButton);
-        }
-        break;
-
-    case WM_TIMER:
-        if (wParam == TIMER_ID && isRunning) {
-            performOCRAndDisplay(currentWindow);
         }
         break;
 
     case WM_DESTROY:
-        KillTimer(hwnd, TIMER_ID);
         PostQuitMessage(0);
         break;
 
@@ -198,6 +177,40 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
     return 0;
 }
 
+bool find(const std::vector<std::string>& lines, const std::string& keyword) {
+    return std::any_of(lines.begin(), lines.end(), [&keyword](const std::string& line) { return line.find(keyword) != std::string::npos; });
+}
+
+std::string findDeck(const std::vector<std::string>& lines) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (lines[i].find("Trading Card Game Player") != std::string::npos) {
+            if (i < lines.size() - 1) {
+                return lines[i + 1]; // Return next line
+            }
+        }
+    }
+    return "";
+}
+
+void writeDataToCSV() {
+    std::ofstream file("deck_stats.csv");
+    if (file.is_open()) {
+        for (const auto& entry : data) {
+            const std::string& deck = entry.first;
+            int wins = entry.second.first;
+            int losses = entry.second.second;
+
+            // Write only if there are non-zero stats
+            if (wins > 0 || losses > 0) {
+                file << deck << "," << wins << "," << losses << "\n";
+            }
+        }
+        file.close();
+    } else {
+        std::cerr << "Error: Could not open file deck_stats.csv for writing." << std::endl;
+    }
+}
+
 int main() {
     if (tess.Init("./tessdata", "eng")) {
         std::cerr << "OCRTesseract: Could not initialize tesseract." << std::endl;
@@ -205,6 +218,7 @@ int main() {
     }
 
     tess.SetPageSegMode(tesseract::PageSegMode::PSM_AUTO);
+    tess.SetVariable("user_defined_dpi", "72");
 
     WNDCLASS wc = {};
     wc.lpfnWndProc = WindowProc;
@@ -228,6 +242,47 @@ int main() {
     while (GetMessage(&msg, NULL, 0, 0)) {
         TranslateMessage(&msg);
         DispatchMessage(&msg);
+    }
+
+    while (isRunning) {
+        cv::Mat screenshot = captureWindow(currentWindow);
+        if (!screenshot.empty()) {
+            cv::Mat preprocessedImage = preprocessImage(screenshot);
+            auto lines = performOCR(preprocessedImage);
+
+            for (const auto& line : lines) {
+                std::cout << line << std::endl;
+            }
+
+            if (!lines.empty()) {
+                if (find(lines, "Random Match")) {
+                    std::string updatedDeck = findDeck(lines);
+                    if (!updatedDeck.empty() && updatedDeck != currentDeck) {
+                        currentDeck = updatedDeck;
+                        if (data.find(currentDeck) == data.end()) {
+                            data[currentDeck] = {0, 0};
+                        }
+                    }
+                }
+
+                if (!currentDeck.empty()) {
+                    if (find(lines, "Victory")) {
+                        data[currentDeck].first++;
+                        currentDeck.clear();
+                        writeDataToCSV();
+                    }
+
+                    if (find(lines, "Defeat")) {
+                        data[currentDeck].second++;
+                        currentDeck.clear();
+                        writeDataToCSV();
+                    }
+                }
+            }
+        } else {
+            std::cerr << "Failed to capture the window." << std::endl;
+        }
+        Sleep(500); // Simulate the timer interval
     }
 
     return 0;
