@@ -459,7 +459,7 @@ int main() {
                 }
             }
         }
-        Sleep(500); // Simulate the timer interval
+        Sleep(100); // Simulate the timer interval
     }
 
     serverRunning = false;
