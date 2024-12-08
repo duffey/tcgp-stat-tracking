@@ -26,6 +26,7 @@ std::vector<std::string> windowTitles;
 tesseract::TessBaseAPI tess;
 
 bool isRunning = false;
+bool readyForMatch = false;
 std::string currentWindow;
 
 std::string currentDeck;
@@ -62,11 +63,9 @@ std::string generateHTMLTable() {
         int losses = entry.second.second;
 
         if (wins > 0 || losses > 0) {
-            int winRate = (wins * 100) / (wins + losses); // Calculate win rate
-
-            // Add "current-deck" class if this is the current deck
-            html << "                <tr" << (deck == currentDeck ? " class=\"current-deck\"" : "") << ">\n";
-            html << "                    <td>" << deck << "</td>\n";
+            int winRate = (wins * 100) / (wins + losses);
+            html << "                <tr>\n";
+            html << "                    <td" << (deck == currentDeck ? " class=\"current-deck\"" : "") << ">" << deck << "</td>\n";
             html << "                    <td>" << wins << "</td>\n";
             html << "                    <td>" << losses << "</td>\n";
             html << "                    <td>" << winRate << "%</td>\n";
@@ -438,6 +437,7 @@ int main() {
                     std::string updatedDeck = findDeck(lines);
                     if (!updatedDeck.empty() && updatedDeck != currentDeck) {
                         currentDeck = updatedDeck;
+                        readyForMatch = true;
                         if (data.find(currentDeck) == data.end()) {
                             data[currentDeck] = {0, 0};
                         }
@@ -445,19 +445,19 @@ int main() {
                     }
                 }
 
-                if (!currentDeck.empty()) {
+                if (!currentDeck.empty() && readyForMatch) {
                     if (find(lines, "Victory")) {
                         data[currentDeck].first++;
-                        currentDeck.clear();
                         writeDataToCSV();
                         std::cout << "Victory!" << std::endl;
+                        readyForMatch = false;
                     }
 
                     if (find(lines, "Defeat")) {
                         data[currentDeck].second++;
-                        currentDeck.clear();
                         writeDataToCSV();
                         std::cout << "Defeat..." << std::endl;
+                        readyForMatch = false;
                     }
                 }
             }
