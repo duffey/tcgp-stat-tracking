@@ -43,6 +43,7 @@ std::string generateHTMLTable() {
     html << "            body { font-size: 26px; font-family: Roboto; }\n";
     html << "            th { text-align: left; }\n";
     html << "            th, td { padding-right: 1em; }\n";
+    html << "            .current-deck { color: yellow; }\n"; // CSS for highlighting the current deck
     html << "        </style>\n";
     html << "        <script>\n";
     html << "            setTimeout(function() { location.reload(); }, 5000);\n";
@@ -63,7 +64,8 @@ std::string generateHTMLTable() {
         if (wins > 0 || losses > 0) {
             int winRate = (wins * 100) / (wins + losses); // Calculate win rate
 
-            html << "                <tr>\n";
+            // Add "current-deck" class if this is the current deck
+            html << "                <tr" << (deck == currentDeck ? " class=\"current-deck\"" : "") << ">\n";
             html << "                    <td>" << deck << "</td>\n";
             html << "                    <td>" << wins << "</td>\n";
             html << "                    <td>" << losses << "</td>\n";
@@ -79,6 +81,7 @@ std::string generateHTMLTable() {
 
     return html.str();
 }
+
 
 void handleClient(SOCKET clientSocket) {
     // Read the HTTP request
