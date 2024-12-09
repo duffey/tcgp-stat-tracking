@@ -332,9 +332,9 @@ bool find(const std::vector<std::string>& lines, const std::string& keyword) {
 
 std::string findDeck(const std::vector<std::string>& lines) {
     for (size_t i = 0; i < lines.size(); ++i) {
-        if (lines[i].find("Trading Card Game Player") != std::string::npos) {
-            if (i < lines.size() - 1) {
-                return lines[i + 1]; // Return next line
+        if (lines[i].find("Battle stance") != std::string::npos) {
+            if (i < lines.size() - 2) {
+                return lines[i + 2];
             }
         }
     }
@@ -425,12 +425,12 @@ int main() {
         if (!screenshot.empty()) {
             cv::Mat preprocessedImage = preprocessImage(screenshot);
             auto lines = performOCR(preprocessedImage);
-
-            /*
+        
+/*
             for (const auto& line : lines) {
                 std::cout << line << std::endl;
             }
-            */
+*/
 
             if (!lines.empty()) {
                 if (find(lines, "Random Match")) {
